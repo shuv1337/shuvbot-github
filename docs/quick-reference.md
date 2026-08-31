@@ -84,6 +84,11 @@ Jujutsu revisions are resolved by `jj` into ordinary Git commits, so everything 
 identical for both. `jj` must be on `PATH` in a Jujutsu workspace; if it is missing, shuvbot says
 so and suggests an explicit Git range.
 
+When merging a pull request from a colocated JJ checkout, omit Git's local branch cleanup flag:
+`gh pr merge --delete-branch` asks Git to delete a branch even though JJ intentionally leaves Git's
+`HEAD` detached. Use `gh pr merge` without `--delete-branch`, then confirm the resulting workspace
+with `jj status` and `jj log`.
+
 ### Reading the result
 
 Size picks the tier, which picks the roster: `trivial` runs one reviewer, `lite` five, `full` all
