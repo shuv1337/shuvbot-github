@@ -1,5 +1,14 @@
 name: shuvbot
 
+# Template for running shuvbot in another repository.
+#
+# Copy this file to `.github/workflows/shuvbot.yml`, copy
+# `templates/consumer/.github/shuvbot.ci.toml` to `.github/shuvbot.ci.toml`,
+# and add the `CLAUDE_CODE_OAUTH_TOKEN` repository secret. Nothing else is
+# required: the repository does not need a package.json, a lockfile, or any
+# dependency on shuvbot. See docs/workflows.md, "Using shuvbot in another
+# repository".
+#
 # Manual only. shuvbot reviews when it is explicitly asked to, by mentioning it
 # in a comment on a pull request - never automatically on push or on open.
 #
@@ -24,14 +33,13 @@ concurrency:
 jobs:
   review:
     name: shuvbot review
-    # Only the repository owner, only an explicit @shuvbot mention, and only on
-    # a pull request comment.
+    # Only one trusted login, only an explicit @shuvbot mention, and only on a
+    # pull request comment.
     #
-    # `issue_comment` also fires for plain issues. No mode handles an issue yet
-    # (review needs a diff; ask/explain/summarize map to a triage mode with no
-    # handler), so an issue mention would only start a job that fails closed
-    # and leaves a red X. `issue.pull_request` is present only when the issue
-    # is a pull request, so it is the cheapest place to stop that.
+    # `issue_comment` also fires for plain issues. No mode handles an issue yet,
+    # so an issue mention would only start a job that fails closed and leaves a
+    # red X. `issue.pull_request` is present only when the issue is a pull
+    # request, so it is the cheapest place to stop that.
     #
     # `comment.user.login` is set by GitHub and cannot be spoofed, so this is a
     # real gate - but it is the *only* identity gate. The action independently
@@ -50,10 +58,12 @@ jobs:
       issues: write
       checks: read
     steps:
-      # Execute only code from the trusted default branch. The Action fetches
-      # the pull request diff through GitHub's API; PR-controlled dist files,
-      # dependencies, and lifecycle scripts must never run with the provider
-      # credential in the environment.
+      # The action code comes from the `uses:` ref below and the pull request
+      # diff comes from GitHub's API, so this checkout exists only to give the
+      # review runtime somewhere to be installed. Check out the trusted default
+      # branch anyway: the install step runs inside this checkout, and a pull
+      # request must not be able to plant a registry override (bunfig.toml,
+      # .npmrc) that the runtime download would honour.
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -61,22 +71,28 @@ jobs:
 
       - uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
 
-      # The coordinator spawns a pinned shuvcode runtime, which has to be
-      # installed already: the action bundle is self-contained and never runs a
-      # package manager. shuvcode is an exact devDependency of this repository,
-      # so the lockfile is the pin and no separate install pin can drift.
+      # The action bundle is self-contained and never runs a package manager,
+      # so the workflow installs the pinned review runtime. `--no-save` leaves
+      # this repository's package.json and lockfile untouched, and needs
+      # neither to exist. `--ignore-scripts` keeps this repository's own
+      # lifecycle scripts from running in a job that holds the provider
+      # credential; the runtime itself needs no install scripts.
+      #
+      # The version must equal review.shuvcode.version in
+      # .github/shuvbot.ci.toml, or the review fails before it starts.
       - name: Install the review runtime
-        run: bun install --frozen-lockfile
+        run: bun add --no-save --ignore-scripts shuvcode@2.0.0-alpha-9
 
-      # The trusted default-branch action, not the pull request's action code.
-      # This remains local because `engine: coordinator` is not in v0 yet.
+      # `master` tracks the latest reviewed shuvbot code. For reproducible runs
+      # pin an exact commit SHA of shuv1337/shuvbot-github and move it
+      # deliberately. The published `v0` tag predates the coordinator engine
+      # and does not work with this workflow.
       - name: Run shuvbot
-        uses: ./
+        uses: shuv1337/shuvbot-github@master
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           engine: coordinator
-          # The action does not auto-discover shuvbot.toml the way the CLI does.
-          # Without this the coordinator falls back to local-profile auth and
+          # The action falls back to local-profile auth without this and
           # refuses to start on a runner.
           config: .github/shuvbot.ci.toml
         env:

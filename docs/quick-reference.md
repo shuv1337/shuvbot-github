@@ -176,20 +176,26 @@ bun run smoke:runtime                    # drive the pinned runtime end to end
 
 ## GitHub reviews
 
-`.github/workflows/shuvbot.yml` runs the published action on pull requests targeting `master`. It
-is **advisory**: it comments but never blocks a merge.
+`.github/workflows/shuvbot.yml` runs the coordinator review when `@shuvbot review` is commented on
+a pull request. It is **advisory**: it comments but never blocks a merge.
+
+To use it in another repository, copy `templates/consumer/.github/workflows/shuvbot.yml` and
+`templates/consumer/.github/shuvbot.ci.toml` into that repository's `.github/`, change the login
+gate, and add the `CLAUDE_CODE_OAUTH_TOKEN` secret. The step that does the work is:
 
 ```yaml
-- uses: shuv1337/shuvbot@v0
+- uses: shuv1337/shuvbot-github@master
   with:
     token: ${{ secrets.GITHUB_TOKEN }}
+    engine: coordinator
+    config: .github/shuvbot.ci.toml
   env:
     CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 ```
 
 Requires the `CLAUDE_CODE_OAUTH_TOKEN` secret (`docs/claude-token.md` to mint one). Fork pull
-requests are skipped, because secrets are not available to them, and drafts wait for
-`ready_for_review`.
+requests are reviewed but never posted to. See `docs/workflows.md`, "Using shuvbot in another
+repository", for what each line of the template does.
 
 Useful inputs: `mode`, `model`, `config`, `timeout`, `activity_timeout`, `push`, `shell`, `prompt`.
 Outputs: `result`, `review_findings`, `summary`. Failure diagnostics upload as the `shuvbot`
@@ -208,10 +214,10 @@ their policy and tooling path and stop at a documented no-op. See `docs/workflow
 
 ### Asking for a review by comment
 
-Comment `@shuvbot review` on any pull request to review it on demand. Manual commands can also be
-sent on ordinary issues. The workflow needs both comment triggers; see
-`.github/workflows/shuvbot.yml` in this repository for the shape. The triggering comment gets
-eyes while the run is in flight, then rocket or confused when it ends.
+Comment `@shuvbot review` on any pull request to review it on demand. Mentions on ordinary issues
+are gated out in the workflow until an issue handler exists. The workflow needs both comment
+triggers; see `.github/workflows/shuvbot.yml` in this repository for the shape. The triggering
+comment gets eyes while the run is in flight, then rocket or confused when it ends.
 
 Four things are worth knowing:
 

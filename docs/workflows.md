@@ -4,7 +4,12 @@
 `fix-ci` run their full policy/branch/tooling path but end in a no-op agent
 step that says so in the run summary - see the notes on each workflow below.
 
-## Manual Comment Review
+## Manual Comment Review (single-agent path)
+
+This section describes the single-agent Claude Code path, which is what the
+published `v0`/`v0.1.0` tags run. New workflows should use the coordinator
+engine instead; see "Using shuvbot in another repository" below. The trigger
+shape and guards here apply to both.
 
 Review mode needs the Claude Code CLI on `PATH` and Claude credentials in
 addition to the GitHub token: install Claude Code before the shuvbot step, then
@@ -13,14 +18,14 @@ expose `CLAUDE_CODE_OAUTH_TOKEN` (or `ANTHROPIC_API_KEY`) to the step via
 fails before normal review artifacts are written, shuvbot logs a redacted
 diagnostic tail and persists it as `$RUNNER_TEMP/shuvbot/shuvbot-agent-error.txt`.
 
-Review runs only from an `@shuvbot <command>` mention in an issue or pull-request comment. PR
-bodies, issue bodies, pushes, schedules, workflow dispatch, and workflow-run events never start
-shuvbot.
+Review runs only from an `@shuvbot <command>` mention in a pull-request comment. PR bodies,
+issue bodies, plain-issue comments, pushes, schedules, workflow dispatch, and workflow-run events
+never start shuvbot.
 
 ```yaml
 name: shuvbot
 on:
-  issue_comment: # conversation tab, including ordinary issues
+  issue_comment: # conversation tab; the job gate below keeps it to pull requests
     types: [created, edited]
   pull_request_review_comment: # inline diff comments
     types: [created, edited]
@@ -31,7 +36,8 @@ jobs:
   review:
     if: >-
       contains(github.event.comment.body, '@shuvbot') &&
-      (github.event_name == 'issue_comment' ||
+      ((github.event_name == 'issue_comment' &&
+          github.event.issue.pull_request != null) ||
         github.event_name == 'pull_request_review_comment')
     runs-on: ubuntu-latest
     permissions:
@@ -82,54 +88,39 @@ single-agent path does not.
 
 The Claude Code CLI is _not_ needed for coordinator review - it replaces that driver.
 
-```yaml
-name: shuvbot
-on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+### Using shuvbot in another repository
 
-permissions: {}
+The repository being reviewed needs three files and one secret, and nothing else: no
+`package.json`, no lockfile, no dependency on shuvbot.
 
-jobs:
-  review:
-    if: github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: write
-      checks: read
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
-      # Must match review.shuvcode.version in your shuvbot.toml.
-      - name: Install the review runtime
-        run: bun add --no-save shuvcode@2.0.0-alpha-9
-      - uses: shuv1337/shuvbot@v0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          engine: coordinator
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      - name: Upload shuvbot artifacts
-        if: always()
-        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
-        with:
-          name: shuvbot
-          path: ${{ runner.temp }}/shuvbot
-          if-no-files-found: warn
-```
+1. Copy `templates/consumer/.github/workflows/shuvbot.yml` to `.github/workflows/shuvbot.yml`.
+   Change the `github.event.comment.user.login == 'shuv1337'` gate to the login that should be
+   allowed to invoke shuvbot.
+2. Copy `templates/consumer/.github/shuvbot.ci.toml` to `.github/shuvbot.ci.toml`.
+3. Add the `CLAUDE_CODE_OAUTH_TOKEN` repository secret (`docs/claude-token.md` to mint one; the
+   token is account-level, so one value works in every repository).
 
-with `shuvbot.toml`:
+Then comment `@shuvbot review` on a pull request.
 
-```toml
-[review]
-engine = "coordinator"
+The template is manual-only and owner-gated, identical in shape to this repository's own
+`.github/workflows/shuvbot.yml`, with three differences that matter:
 
-[review.shuvcode]
-version = "2.0.0-alpha-9"
-auth = "environment"
-```
+- **`uses: shuv1337/shuvbot-github@master`**, not `uses: ./`. The published `v0` tag predates the
+  coordinator engine, the read budget, and mention reactions, and will not work with this workflow.
+  Pin an exact commit SHA of `shuv1337/shuvbot-github` for reproducible runs.
+- **`bun add --no-save --ignore-scripts shuvcode@<version>`** installs the runtime into the reviewed
+  checkout. `--no-save` leaves the repository's own `package.json` and lockfile untouched and does
+  not need either to exist; the action's resolver walks `node_modules` up from the checkout. Without
+  `--ignore-scripts`, the reviewed repository's own `postinstall` runs inside a job that holds the
+  provider credential. The version must equal `review.shuvcode.version` in the config.
+- **The checkout is the trusted default branch**, even though the action code and the diff both come
+  from elsewhere: the install step runs inside that checkout, and a pull request must not be able to
+  plant a `bunfig.toml` or `.npmrc` registry override that the runtime download would honour.
+
+`config: .github/shuvbot.ci.toml` is required. The Action does not auto-discover a config file the
+way the CLI does, and without one the coordinator falls back to local-profile auth and refuses to
+start on a runner. The template config is Anthropic-only because environment auth forwards exactly
+one credential; a roster spanning providers fails every specialist.
 
 ### What the coordinator run publishes
 
@@ -149,9 +140,9 @@ Fork pull requests are reviewed but never posted to, and never receive state.
 
 ## Comment-Triggered Review
 
-Commenting `@shuvbot review` on a pull request reviews it on demand. Comment commands on ordinary
-issues are accepted as manual invocations too; review mode then fails closed because an issue has
-no pull-request diff. Other commands can use the issue context when their mode supports it.
+Commenting `@shuvbot review` on a pull request reviews it on demand. Comments on ordinary issues
+are gated out in the workflow (see below): no mode can act on an issue yet, so accepting the
+mention would only start a job that fails closed.
 
 A mention gets a lifecycle reaction on that comment: **eyes** when the run starts, **rocket** if
 it finishes, **confused** if it fails. The signal is mechanical and never fails the job. It is
@@ -174,9 +165,12 @@ The action handles both. Subscribing to only `issue_comment` - the easy mistake 
 `github.event.issue.number` is undefined for `pull_request_review_comment`, so guards, concurrency
 groups, and any PR-number lookup need `github.event.issue.number || github.event.pull_request.number`.
 
-`issue_comment` also fires for **plain issues**. The workflow intentionally allows those mentions so
-issue-oriented commands are observable; a review command on a plain issue fails closed because
-there is no pull-request diff.
+`issue_comment` also fires for **plain issues**. The workflow gates those out with
+`github.event.issue.pull_request != null`, which GitHub sets only when the issue is a pull request.
+No mode handles an issue yet: review needs a diff, and `ask`/`explain`/`summarize` resolve to a
+`triage` mode with no handler, so an issue mention would only start a job that fails closed and
+leaves a red X on the thread. The action still fails loudly if it ever receives one; lift the
+workflow gate once an issue handler exists.
 
 To restrict who can invoke shuvbot, match the login directly - `github.event.comment.user.login ==
 '<you>'`. GitHub sets that field, so it cannot be spoofed. Be aware this is then the _only_ identity
@@ -242,7 +236,7 @@ steps:
       echo "$HOME/.local/bin" >> "$GITHUB_PATH"
   - name: Verify Claude Code
     run: claude --version
-  - uses: shuv1337/shuvbot@v0
+  - uses: shuv1337/shuvbot-github@master
     with:
       mode: fix-ci
       token: ${{ secrets.GITHUB_TOKEN }}
@@ -261,12 +255,15 @@ is produced. Only `review` mode currently produces real `result`,
 
 ## Hardened SHA-Pinned Variant
 
-Replace `shuv1337/shuvbot@v0` with an immutable point release or exact commit SHA for reproducible production workflows:
+Replace `shuv1337/shuvbot-github@master` with an exact commit SHA for reproducible production
+workflows, and move it deliberately:
 
 ```yaml
-- uses: shuv1337/shuvbot@v0.1.0
-# or
-- uses: shuv1337/shuvbot@<release-commit-sha>
+- uses: shuv1337/shuvbot-github@<commit-sha>
 ```
+
+The published `v0` and `v0.1.0` tags point at the single-agent path and predate the coordinator
+engine; they do not work with the coordinator workflow. A release tag that includes the coordinator
+will be cut once the Action's reliability is measured (see `HANDOFF.md`).
 
 Third-party actions in examples are SHA-pinned. Keep job permissions explicit and minimal.

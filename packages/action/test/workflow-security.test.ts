@@ -10,8 +10,29 @@ const WORKFLOW = join(
   "../../../.github/workflows/shuvbot.yml"
 );
 const CI_CONFIG = join(dirname(fileURLToPath(import.meta.url)), "../../../.github/shuvbot.ci.toml");
+const TEMPLATE_WORKFLOW = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../templates/consumer/.github/workflows/shuvbot.yml"
+);
+const TEMPLATE_CONFIG = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../templates/consumer/.github/shuvbot.ci.toml"
+);
+
+/** The job gate every shuvbot workflow must carry: mention, and a pull request. */
+const MENTION_GATE = "contains(github.event.comment.body, '@shuvbot')";
+const PULL_REQUEST_GATE = "github.event.issue.pull_request != null";
 
 describe("repository review workflow security", () => {
+  test("starts only from a mention on a pull request", async () => {
+    // issue_comment fires for plain issues too, and no mode handles an issue
+    // yet, so accepting one would only start a job that fails closed.
+    const source = await readFile(WORKFLOW, "utf8");
+    expect(source).toContain(MENTION_GATE);
+    expect(source).toContain(PULL_REQUEST_GATE);
+    expect(source).not.toContain("pull_request:\n");
+  });
+
   test("executes only trusted default-branch code with the provider credential", async () => {
     const source = await readFile(WORKFLOW, "utf8");
 
@@ -44,5 +65,47 @@ describe("repository review workflow security", () => {
     // Null would mean no approved release exists, which the pin must never be.
     expect(APPROVED_SHUVCODE_RUNTIME_VERSION).not.toBeNull();
     expect(config.review.shuvcode.version).toBe(APPROVED_SHUVCODE_RUNTIME_VERSION!);
+  });
+});
+
+describe("consumer workflow template", () => {
+  test("carries the same gates and posture as the repository workflow", async () => {
+    const source = await readFile(TEMPLATE_WORKFLOW, "utf8");
+
+    expect(source).toContain(MENTION_GATE);
+    expect(source).toContain(PULL_REQUEST_GATE);
+    expect(source).toContain("github.event.comment.user.login ==");
+    expect(source).not.toContain("pull_request:\n");
+    expect(source).toContain("permissions: {}");
+    expect(source).toContain("ref: ${{ github.event.repository.default_branch }}");
+    expect(source).not.toContain("refs/pull/");
+    // A consumer runs the published action, never a local checkout of it.
+    expect(source).toContain("uses: shuv1337/shuvbot-github@");
+    expect(source).not.toContain("uses: ./");
+    expect(source).toContain("engine: coordinator");
+    expect(source).toContain("config: .github/shuvbot.ci.toml");
+    expect(source).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+  });
+
+  test("installs the approved runtime without running the reviewed repository's scripts", async () => {
+    const source = await readFile(TEMPLATE_WORKFLOW, "utf8");
+    const install = /bun add --no-save --ignore-scripts shuvcode@(\S+)/.exec(source);
+    // Without --ignore-scripts the reviewed repository's own postinstall runs
+    // in a job holding the provider credential.
+    expect(install).not.toBeNull();
+    expect(install![1]).toBe(APPROVED_SHUVCODE_RUNTIME_VERSION!);
+  });
+
+  test("the template config matches the installed runtime and the credential", async () => {
+    const config = await loadConfigFile(TEMPLATE_CONFIG);
+    expect(config.review.engine).toBe("coordinator");
+    expect(config.review.shuvcode.auth).toBe("environment");
+    expect(config.review.shuvcode.version).toBe(APPROVED_SHUVCODE_RUNTIME_VERSION!);
+    expect(() =>
+      assertReviewModelsReachable({
+        credential: { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "test-token" },
+        models: config.review.models
+      })
+    ).not.toThrow();
   });
 });

@@ -1,0 +1,28 @@
+# shuvbot's configuration when it reviews this repository from GitHub Actions.
+#
+# Copy to `.github/shuvbot.ci.toml` and reference it from the workflow with
+# `config: .github/shuvbot.ci.toml`. The Action does not auto-discover a config
+# file the way the CLI does, and this file is deliberately separate from any
+# root shuvbot.toml: `auth = "environment"` is correct on a runner and wrong on
+# a laptop, so one shared file would force local review to require a CI secret.
+
+[review]
+engine = "coordinator"
+
+[review.shuvcode]
+# Must equal the version the workflow installs, or the review fails before any
+# review work starts rather than running an untested runtime.
+version = "2.0.0-alpha-9"
+# A runner has no shuvcode profile, so the runtime authenticates from a single
+# credential in the job environment (CLAUDE_CODE_OAUTH_TOKEN).
+auth = "environment"
+
+# Anthropic-only, because environment auth forwards exactly one credential.
+# The built-in defaults span three providers, which works on a machine whose
+# shuvcode profile has all three and fails every specialist here.
+[review.models]
+coordinator = "subscription/claude-opus-5@medium"
+# @medium, not @high: a full-tier review is bounded by effort, not the clock.
+# @high did not converge on a large workspace; @medium reaches quorum.
+standard = "subscription/claude-fable-5@medium"
+light = "subscription/claude-fable-5@low"
